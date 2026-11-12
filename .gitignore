@@ -1,0 +1,18 @@
+# secrets — never commit
+token.txt
+config.json
+
+# runtime data
+data/
+
+# python
+venv/
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+
+# windows
+*.log
+Thumbs.db
+desktop.ini
