@@ -27,6 +27,10 @@ from tsetmc import TsetmcClient
 logging.basicConfig(
     format="%(asctime)s %(levelname)s %(name)s | %(message)s", level=logging.INFO)
 logging.getLogger("httpx").setLevel(logging.WARNING)
+_here = os.path.dirname(os.path.abspath(__file__))
+_fh = logging.FileHandler(os.path.join(_here, "bot.log"), encoding="utf-8")
+_fh.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s | %(message)s"))
+logging.getLogger().addHandler(_fh)
 log = logging.getLogger("bot")
 
 TEHRAN = ZoneInfo("Asia/Tehran")
