@@ -639,7 +639,22 @@ def main() -> None:
     BOT_REF.append(app.bot)
     app.job_queue.run_repeating(alert_tick, interval=600, first=20, name="market-tick")
     log.info("Bot is polling…")
-    app.run_polling(drop_pending_updates=True, allowed_updates=["message", "callback_query"])
+    # survive proxy/internet blips: rebuild and retry instead of dying
+    import time as _time
+    while True:
+        try:
+            app.run_polling(drop_pending_updates=True,
+                            allowed_updates=["message", "callback_query"])
+            break  # clean shutdown (Ctrl+C) → exit normally
+        except SystemExit:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            log.warning("Polling failed (%s) — retrying in 15s…", exc)
+            _time.sleep(15)
+            app = build_app(token)
+            BOT_REF[0] = app.bot
+            app.job_queue.run_repeating(alert_tick, interval=600, first=20,
+                                        name="market-tick")
 
 
 if __name__ == "__main__":
