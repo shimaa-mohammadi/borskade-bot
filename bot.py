@@ -645,20 +645,19 @@ def build_app(token: str, proxy: str | None = None) -> Application:
     return app
 
 
-async def _poll_forever(app: Application):
-    """Manual lifecycle with a fresh event loop per attempt."""
-    async with app:
-        await post_init(app)
-        await app.updater.start_polling(
-            drop_pending_updates=True,
-            allowed_updates=["message", "callback_query"])
-        await asyncio.Event().wait()
+def run_worker(token: str, proxy: str | None) -> None:
+    """One polling attempt in a fresh process (fresh event loop each time)."""
+    app = build_app(token, proxy=proxy)
+    BOT_REF[:] = [app.bot]
+    log.info("Bot is polling…")
+    app.run_polling(drop_pending_updates=True,
+                    allowed_updates=["message", "callback_query"])
 
 
-def main() -> None:
+def _resolve_token(args: list[str]) -> str | None:
     token = None
-    if len(sys.argv) > 1:
-        token = sys.argv[1]
+    if args:
+        token = args[0]
     token = token or os.environ.get("BOT_TOKEN")
     cfg_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.json")
     if not token and os.path.exists(cfg_path):
@@ -667,12 +666,27 @@ def main() -> None:
     tok_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "token.txt")
     if not token and os.path.exists(tok_path):
         token = open(tok_path, encoding="utf-8").read().strip() or None
+    return token
+
+
+def main() -> None:
+    extra_args = [a for a in sys.argv[1:] if a != "--worker"]
+
+    if "--worker" in sys.argv:
+        token = _resolve_token(extra_args) or os.environ.get("BOT_TOKEN")
+        if not token:
+            sys.exit(1)
+        run_worker(token, os.environ.get("BOT_ROUTE") or None)
+        return
+
+    token = _resolve_token(extra_args)
     if not token:
         print("استفاده: python bot.py <TELEGRAM_TOKEN>  یا متغیر محیطی BOT_TOKEN")
         sys.exit(1)
 
+    import subprocess
     import time as _time
-    log.info("BorsKade starting…")
+    log.info("BorsKade supervisor starting…")
     while True:
         route = _pick_telegram_route()
         if route == "dead":
@@ -680,21 +694,20 @@ def main() -> None:
                         "(پراکسی و اتصال مستقیم هر دو قطع‌اند) — تلاش مجدد بعد از ۲۰ ثانیه")
             _time.sleep(20)
             continue
-        if route:
-            log.info("Telegram route: proxy %s", route)
-        else:
-            log.info("Telegram route: direct")
+        env = os.environ.copy()
+        env["BOT_ROUTE"] = route or ""
+        env["PYTHONIOENCODING"] = "utf-8"
+        log.info("Launching worker (route: %s)…", route or "direct")
+        proc = subprocess.Popen([sys.executable, "-X", "utf8",
+                                 os.path.abspath(__file__), "--worker"], env=env)
         try:
-            app = build_app(token, proxy=route)
-            BOT_REF[:] = [app.bot]
-            asyncio.run(_poll_forever(app))
-            break  # clean exit
+            code = proc.wait()
         except KeyboardInterrupt:
+            proc.terminate()
             log.info("Stopped by user.")
             break
-        except Exception as exc:  # noqa: BLE001
-            log.warning("Polling failed (%s) — retrying in 15s…", exc)
-            _time.sleep(15)
+        log.warning("Worker exited (code %s) — restarting in 15s…", code)
+        _time.sleep(15)
 
 
 if __name__ == "__main__":
