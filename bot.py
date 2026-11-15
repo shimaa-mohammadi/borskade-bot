@@ -14,7 +14,7 @@ from telegram.constants import ChatAction
 from telegram.error import BadRequest, TelegramError
 from telegram.ext import (Application, CallbackQueryHandler,
                           CommandHandler, ConversationHandler,
-                          ContextTypes, MessageHandler, filters)
+                          ContextTypes, MessageHandler, TypeHandler, filters)
 
 import httpx
 
@@ -62,6 +62,7 @@ async def answer(q, text: str | None = None, show_alert: bool = False):
 async def send(bot, chat_id: int, text: str,
                keyboard: InlineKeyboardMarkup | None = None) -> None:
     """Send text split into <=4000-char chunks."""
+    log.info("SEND to chat %s (%d chars)", chat_id, len(text))
     parts, cur = [], ""
     for block in text.split("\n"):
         if len(cur) + len(block) + 1 > 3900:
@@ -174,6 +175,7 @@ async def post_init(app: Application):
 
 async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
+    log.info("cmd_start received from chat %s", chat_id)
     alerts_on = store.chat(chat_id).get("alerts", True)
     kb = InlineKeyboardMarkup([[
         InlineKeyboardButton("🔔 هشدارها: روشن" if alerts_on else "🔕 هشدارها: خاموش",
@@ -649,12 +651,30 @@ def build_app(token: str, proxy: str | None = None) -> Application:
     return app
 
 
+async def _log_update(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Trace every incoming update (group -1 → runs before all handlers)."""
+    try:
+        kind = ("message:" + str(getattr(update, "message", None) and
+                                 (update.message.text or update.message.chat.type))
+                if update.message else str(update))
+        log.info("UPDATE IN ← %s", kind[:120])
+    except Exception:
+        log.info("UPDATE IN ← %s", str(update)[:120])
+
+
+async def _log_error(update: object, ctx: ContextTypes.DEFAULT_TYPE):
+    log.error("HANDLER ERROR for update %s: %s",
+              getattr(update, "update_id", "?"), ctx.error, exc_info=ctx.error)
+
+
 def run_worker(token: str, proxy: str | None) -> None:
     """One polling attempt in a fresh process (fresh event loop each time)."""
     app = build_app(token, proxy=proxy)
     BOT_REF[:] = [app.bot]
+    app.add_handler(TypeHandler(Update, _log_update), group=-1)
+    app.add_error_handler(_log_error)
     log.info("Bot is polling…")
-    app.run_polling(drop_pending_updates=True,
+    app.run_polling(drop_pending_updates=False,
                     allowed_updates=["message", "callback_query"])
 
 
