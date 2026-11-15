@@ -648,18 +648,41 @@ def build_app(token: str, proxy: str | None = None) -> Application:
     app.add_handler(CommandHandler("remove", cmd_remove))
     app.add_handler(CommandHandler("alerts", cmd_alerts))
     app.add_handler(CallbackQueryHandler(on_button))
+    # same group, added LAST → runs only when nothing above matched:
+    # entity-less "/start" (some clients send commands without entities)
+    # and any other unmatched text → never leave the user in silence.
+    app.add_handler(MessageHandler(filters.TEXT & filters.Regex(r"^\s*/"),
+                                   cmd_start))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND,
+                                   fallback_any_text))
     return app
 
 
 async def _log_update(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     """Trace every incoming update (group -1 → runs before all handlers)."""
     try:
-        kind = ("message:" + str(getattr(update, "message", None) and
-                                 (update.message.text or update.message.chat.type))
-                if update.message else str(update))
-        log.info("UPDATE IN ← %s", kind[:120])
+        m = update.message
+        if m:
+            ents = [e.type for e in (m.entities or [])]
+            log.info("UPDATE IN ← chat=%s text=%r entities=%s",
+                     m.chat.id, m.text, ents)
+        else:
+            log.info("UPDATE IN ← %s", str(update)[:120])
     except Exception:
         log.info("UPDATE IN ← %s", str(update)[:120])
+
+
+async def fallback_any_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Last-resort handler: never leave the user without an answer."""
+    text = (update.message.text or "").strip() if update.message else ""
+    log.info("FALLBACK for text %r from chat %s",
+             text[:60], update.effective_chat.id)
+    if text.lstrip().startswith("/"):
+        await cmd_start(update, ctx)
+        return
+    await send(ctx.bot, update.effective_chat.id,
+               "🤖 برای شروع از دستور /start استفاده کنید.\n"
+               "📌 یا از منوی ☰ پایین: افزودن نماد / حذف نماد / واچ ایست من")
 
 
 async def _log_error(update: object, ctx: ContextTypes.DEFAULT_TYPE):
