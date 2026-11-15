@@ -16,6 +16,8 @@ from telegram.ext import (Application, CallbackQueryHandler,
                           CommandHandler, ConversationHandler,
                           ContextTypes, MessageHandler, filters)
 
+import httpx
+
 import texts
 from analytics import (growth_quarterly, growth_yearly, norm_fa,
                        pick_statements)
@@ -586,9 +588,30 @@ async def _final_report(chat_id: int, items: list[dict], now):
 
 # -------------------------------------------------------------------- main
 
-def build_app(token: str) -> Application:
+def _pick_telegram_route():
+    """Choose how to reach api.telegram.org: configured proxy, direct, or none.
+
+    Returns the proxy URL, None (= direct works) or "dead" (no route).
+    """
+    proxy = os.environ.get("BOT_PROXY")
+    if proxy:
+        try:
+            with httpx.Client(proxy=proxy, timeout=6) as c:
+                if c.get("https://api.telegram.org/").status_code < 500:
+                    return proxy
+        except Exception:
+            log.warning("Configured proxy %s unreachable — trying direct…", proxy)
+    try:
+        with httpx.Client(timeout=6) as c:
+            if c.get("https://api.telegram.org/").status_code < 500:
+                return None
+    except Exception:
+        pass
+    return "dead"
+
+
+def build_app(token: str, proxy: str | None = None) -> Application:
     builder = Application.builder().token(token).post_init(post_init)
-    proxy = os.environ.get("BOT_PROXY") or None
     if proxy:
         from telegram.request import HTTPXRequest
         try:
@@ -619,6 +642,16 @@ def build_app(token: str) -> Application:
     return app
 
 
+async def _poll_forever(app: Application):
+    """Manual lifecycle with a fresh event loop per attempt."""
+    async with app:
+        await post_init(app)
+        await app.updater.start_polling(
+            drop_pending_updates=True,
+            allowed_updates=["message", "callback_query"])
+        await asyncio.Event().wait()
+
+
 def main() -> None:
     token = None
     if len(sys.argv) > 1:
@@ -635,26 +668,30 @@ def main() -> None:
         print("استفاده: python bot.py <TELEGRAM_TOKEN>  یا متغیر محیطی BOT_TOKEN")
         sys.exit(1)
 
-    app = build_app(token)
-    BOT_REF.append(app.bot)
-    app.job_queue.run_repeating(alert_tick, interval=600, first=20, name="market-tick")
-    log.info("Bot is polling…")
-    # survive proxy/internet blips: rebuild and retry instead of dying
     import time as _time
+    log.info("BorsKade starting…")
     while True:
+        route = _pick_telegram_route()
+        if route == "dead":
+            log.warning("هیچ مسیری به api.telegram.org نیست "
+                        "(پراکسی و اتصال مستقیم هر دو قطع‌اند) — تلاش مجدد بعد از ۲۰ ثانیه")
+            _time.sleep(20)
+            continue
+        if route:
+            log.info("Telegram route: proxy %s", route)
+        else:
+            log.info("Telegram route: direct")
         try:
-            app.run_polling(drop_pending_updates=True,
-                            allowed_updates=["message", "callback_query"])
-            break  # clean shutdown (Ctrl+C) → exit normally
-        except SystemExit:
-            raise
+            app = build_app(token, proxy=route)
+            BOT_REF[0] = app.bot
+            asyncio.run(_poll_forever(app))
+            break  # clean exit
+        except KeyboardInterrupt:
+            log.info("Stopped by user.")
+            break
         except Exception as exc:  # noqa: BLE001
             log.warning("Polling failed (%s) — retrying in 15s…", exc)
             _time.sleep(15)
-            app = build_app(token)
-            BOT_REF[0] = app.bot
-            app.job_queue.run_repeating(alert_tick, interval=600, first=20,
-                                        name="market-tick")
 
 
 if __name__ == "__main__":
