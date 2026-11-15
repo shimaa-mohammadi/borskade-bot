@@ -623,6 +623,9 @@ def build_app(token: str, proxy: str | None = None) -> Application:
         builder = builder.request(tg_req).get_updates_request(tg_upd)
         log.info("Telegram traffic routed via proxy: %s", proxy)
     app = builder.build()
+    app.job_queue.run_repeating(alert_tick, interval=600, first=20,
+                                name="market-tick")
+    return app
 
     conv = ConversationHandler(
         entry_points=[CommandHandler("add", cmd_add),
@@ -683,7 +686,7 @@ def main() -> None:
             log.info("Telegram route: direct")
         try:
             app = build_app(token, proxy=route)
-            BOT_REF[0] = app.bot
+            BOT_REF[:] = [app.bot]
             asyncio.run(_poll_forever(app))
             break  # clean exit
         except KeyboardInterrupt:
